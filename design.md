@@ -28,7 +28,11 @@ configuring nodes:
 
 ### Connection
 
-Connection module always provides a `Device` to other modules, which used to send and receive packets.
-
 Connection module currently based on wireguard(boringtun) to providing connectivity.
 
+#### Code design
+
+Connection module always provides a `Device` to other modules, which used to send and receive packets.
+
+The `Device` object should listen a tun socket and two udp sockets(ipv4 and ipv6) to receive packets from other nodes. In the code path of receiving and sending packets, the hooks for plugins should
+exist.
