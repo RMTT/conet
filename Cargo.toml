@@ -15,7 +15,12 @@ bytes = "1"
 anyhow = "1"
 thiserror = "1"
 clap = { version = "4", features = ["derive"] }
-libc = "0.2"
-hex = "0.4"
 rand = "0.8"
-
+tun-rs = { version = "2.7", features = ["async"] }
+async-trait = "0.1"
+async-channel = "2"
+num_cpus = "1"
+futures = "0.3"
+base64 = "0.22.1"
+ipnet = { version = "2.11.0", features = ["serde"] }
+nix = { version = "0.30.1", features = ["net", "socket"] }

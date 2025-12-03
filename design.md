@@ -30,9 +30,28 @@ configuring nodes:
 
 Connection module currently based on wireguard(boringtun) to providing connectivity.
 
+#### Configuration
+
+format of connection configuration:
+```toml
+[connection]
+interface = "conet0"
+listenPort = 51820
+address = ["10.10.10.1/32"]
+private_key = ""
+
+
+[[connection.peers]]
+public_key = "peer_public_key_hex_here"
+endpoint = "peer.example.com:51820"
+allowed_ips = ["10.0.0.0/24"]
+```
+
 #### Code design
 
-Connection module always provides a `Device` to other modules, which used to send and receive packets.
-
-The `Device` object should listen a tun socket and two udp sockets(ipv4 and ipv6) to receive packets from other nodes. In the code path of receiving and sending packets, the hooks for plugins should
-exist.
+Connection module always provides a `Device` to other modules, which used to send and receive packets:
+- The `Device` object should listen a tun socket and two udp sockets(ipv4 and ipv6) to receive packets from other peers. In the code path of receiving and sending packets, the hooks for plugins should exist. By the way, ipv4 and ipv6 should be two different fields.
+- For `tun` socket mainched by `Device`, data received from `tun` should be encrypted. The dataflow is: packet from apps -> tun -> encrypted packet -> peer
+- For `udp` socket(ipv4 and ipv6) mainched by `Device`, data received from `udp` should be decrypted. The dataflow is: encrypted packets from peers -> udp socket -> original packets -> tun -> apps
+- `Device` will create several workers to handle packets received from `tun` and `udp` sockets
+- The `Device` should also keep the state of peers(endpoint, public_key).

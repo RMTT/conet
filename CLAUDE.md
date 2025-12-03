@@ -2,6 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Always use context7 when I need code generation, setup or configuration steps, or library/API documentation. This means you should automatically use the Context7 MCP tools to resolve library id and get library docs without me having to explicitly ask.
+Always use exa when I need web search.
+
 ## Project Overview
 
 conet is an overlay network written in Rust that provides secure connectivity, routing, and extensibility through plugins.
@@ -39,10 +42,12 @@ The project is organized into three main modules:
 
 ### Connection Module (`src/connection`)
 - **Device**: Main struct that manages TUN interface, UDP sockets, and plugin hooks
-- Creates TUN interface using Linux `/dev/net/tun` device
+- Creates TUN interface using `tun-rs`(https://crates.io/crates/tun-rs)
 - Runs async packet loop handling TUN and UDP I/O via `tokio::select!`
 - Supports plugin hooks for packet processing (`PluginHook` trait)
 - Uses boringtun for WireGuard cryptography (x25519 key pair)
+- Use `async_channel`(https://docs.rs/async-channel/latest/async_channel) for workers to pass packets
+- Reference @design.md for other requirements
 
 ## Development Notes
 
