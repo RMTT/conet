@@ -25,6 +25,10 @@ configuring nodes:
 
 ```
 
+configuration of registry:
+```toml
+[[peers]]
+```
 
 ### Connection
 
@@ -35,16 +39,33 @@ Connection module currently based on wireguard(boringtun) to providing connectiv
 format of connection configuration:
 ```toml
 [connection]
+netid = "test-net"
+nodeid = "m1"
 interface = "conet0"
 listenPort = 51820
 address = ["10.10.10.1/32"]
 private_key = ""
+```
 
+format of registry:
+```toml
+[[peers]]
+netid = "test-net"
 
-[[connection.peers]]
-public_key = "peer_public_key_hex_here"
-endpoint = "peer.example.com:51820"
-allowed_ips = ["10.0.0.0/24"]
+nodes = [
+{
+    nodeid = "m2",
+    public_key = "peer_public_key_hex_here",
+    endpoint = "peer.example.com:51820",
+    allowed_ips = ["10.0.0.0/24"]
+},
+{
+    nodeid = "m3",
+    public_key = "peer_public_key_hex_here",
+    endpoint = "peer2.example.com:51820",
+    allowed_ips = ["10.0.0.0/24"]
+}
+]
 ```
 
 #### Code design

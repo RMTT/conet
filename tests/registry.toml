@@ -1,0 +1,13 @@
+[[peers]]
+netid = "test"
+
+[[peers.nodes]]
+nodeid = "test-1"
+public_key = "oA0G/XPi6lL67p6N27tr334naMAbJNqDuRbanlEekUc="
+endpoint = "127.0.0.1:51821"
+allowed_ips = ["10.10.10.1/32"]
+
+[[peers.nodes]]
+nodeid = "test-2"
+public_key = "EFjn7DE3fTDRMKoOgOqMUyjhS8/W7ryiIWplfWM7hCQ="
+allowed_ips = ["10.10.10.10/32"]

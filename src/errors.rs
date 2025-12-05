@@ -1,3 +1,5 @@
+use std::net::AddrParseError;
+
 use base64::DecodeError;
 
 pub type ConetResult<T> = Result<T, Error>;
@@ -18,4 +20,7 @@ pub enum Error {
 
     #[error(transparent)]
     ReceiverErr(#[from] async_channel::RecvError),
+
+    #[error(transparent)]
+    AddrParseErr(#[from] AddrParseError),
 }

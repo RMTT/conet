@@ -4,15 +4,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::errors::{ConetResult, Error};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PeerInfo {
-    pub public_key: String,
-    pub endpoint: Option<String>,
-    pub allowed_ips: Vec<IpNet>,
+fn default_mtu() -> u16 {
+    1420
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionConfig {
+    pub netid: String,
+    pub nodeid: String,
     pub interface: String,
     pub listen_port: u16,
     pub address: Vec<IpNet>,
@@ -22,8 +20,21 @@ pub struct ConnectionConfig {
     pub peers: Option<Vec<PeerInfo>>,
 }
 
-fn default_mtu() -> u16 {
-    1420
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerInfo {
+    pub nodeid: String,
+    pub public_key: String,
+    pub endpoint: Option<String>,
+    pub allowed_ips: Vec<IpNet>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerConfig {
+    pub netid: String,
+    pub nodes: Vec<PeerInfo>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryConfig {
+    pub peers: Vec<PeerConfig>,
 }
 
 impl ConnectionConfig {
@@ -48,9 +59,15 @@ impl ConnectionConfig {
             return Err(Error::Err("Listen port cannot be 0".to_string()));
         }
 
+        Ok(())
+    }
+}
+
+impl RegistryConfig {
+    pub fn validate(&self) -> ConetResult<()> {
         // Validate peers
-        if let Some(peers) = &self.peers {
-            for peer in peers.iter() {
+        for peer_config in &self.peers {
+            for peer in &peer_config.nodes {
                 if peer.public_key.is_empty() {
                     return Err(Error::Err(format!("Peer {:?} has empty public key", peer)));
                 }

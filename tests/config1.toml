@@ -1,0 +1,7 @@
+[connection]
+netid = "test"
+nodeid = "test-1"
+interface = "conet0"
+listen_port = 51821
+address = [ "10.10.10.1/32" ]
+private_key = "TcjB0Kr4ArzddcPX+fAmG07podep/RJ+nqEIHVHv2VQ="

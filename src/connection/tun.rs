@@ -1,15 +1,22 @@
+use std::usize;
+
 use ipnet::IpNet;
 
 use crate::errors::ConetResult;
 
 pub struct TunDevice {
     device: tun_rs::AsyncDevice,
+    mtu: u16,
 }
 
 impl TunDevice {
-    pub fn new(name: &str) -> ConetResult<Self> {
-        let device = tun_rs::DeviceBuilder::new().name(name).build_async()?;
-        Ok(Self { device })
+    pub fn new(name: &str, mtu: Option<u16>) -> ConetResult<Self> {
+        let mtu = mtu.unwrap_or(1420);
+        let device = tun_rs::DeviceBuilder::new()
+            .name(name)
+            .mtu(mtu)
+            .build_async()?;
+        Ok(Self { device, mtu })
     }
 
     pub fn add_address(&self, addr: &IpNet) -> ConetResult<()> {
@@ -32,8 +39,17 @@ impl TunDevice {
         Ok(())
     }
 
+    pub fn mtu(&self) -> u16 {
+        self.mtu
+    }
+
     pub async fn recv(&self, buf: &mut [u8]) -> ConetResult<usize> {
         let n = self.device.recv(buf).await?;
+        Ok(n)
+    }
+
+    pub async fn send(&self, buf: &mut [u8]) -> ConetResult<usize> {
+        let n = self.device.send(buf).await?;
         Ok(n)
     }
 }
