@@ -11,9 +11,10 @@ use ipnet::IpNet;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use std::net::{IpAddr, ToSocketAddrs};
+use std::sync::Mutex;
 use std::usize;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use super::config::{PeerConfig, RegistryConfig};
@@ -45,6 +46,8 @@ pub struct Device {
     key_pair: (StaticSecret, PublicKey),
     pub message_channel: MessageChannel,
     peer_state: RwLock<PeerState>,
+    /// currently index_generator only be used in update_registry with peer_state, so it's ok to
+    /// use sync::Mutex
     index_generator: Mutex<IndexLfsr>,
     cancel_token: CancellationToken,
     rate_limiter: RateLimiter,
@@ -116,7 +119,7 @@ impl Device {
 
     pub async fn update_registry(&self, config: RegistryConfig) -> ConetResult<()> {
         let mut peer_state = self.peer_state.write().await;
-        let mut idx_generator = self.index_generator.lock().await;
+        let mut idx_generator = self.index_generator.lock().unwrap();
 
         for peer in config.peers {
             for node in &peer.nodes {
@@ -287,7 +290,7 @@ impl Device {
             let peer_ptr = Arc::into_raw(peer.clone()) as *mut Peer;
             let tunn = &mut (*peer_ptr).tunn;
             // set endpoint here because raw pointer is not send, so can't use it after resume from
-            // awwait
+            // await
             (*peer_ptr).endpoint = Some(src_addr);
             match tunn.handle_verified_packet(packet, &mut dst) {
                 TunnResult::Done => return Ok(()),
