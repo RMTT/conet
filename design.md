@@ -52,20 +52,17 @@ format of registry:
 [[peers]]
 netid = "test-net"
 
-nodes = [
-{
-    nodeid = "m2",
-    public_key = "peer_public_key_hex_here",
-    endpoint = "peer.example.com:51820",
-    allowed_ips = ["10.0.0.0/24"]
-},
-{
-    nodeid = "m3",
-    public_key = "peer_public_key_hex_here",
-    endpoint = "peer2.example.com:51820",
-    allowed_ips = ["10.0.0.0/24"]
-}
-]
+[[peers.nodes]]
+nodeid = "m2"
+public_key = "peer_public_key_hex_here"
+endpoint = "peer.example.com:51820"
+allowed_ips = ["10.0.0.0/24"]
+
+[[peers.nodes]]
+nodeid = "m3",
+public_key = "peer_public_key_hex_here"
+endpoint = "peer2.example.com:51820"
+allowed_ips = ["10.0.0.0/24"]
 ```
 
 #### Code design
