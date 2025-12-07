@@ -23,7 +23,6 @@ impl UdpSocket {
             s.set_nonblocking(true)?;
             let address: SockAddr = SockAddr::from(std_addr);
             s.bind(&address)?;
-            log::info!("hello");
 
             tokio::net::UdpSocket::from_std(s.into())?
         };

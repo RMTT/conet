@@ -352,7 +352,7 @@ impl Device {
                     // SAFETY: only one branch uses buf every loop
                     unsafe{
                         let b = Arc::into_raw(buf.clone()) as *mut [u8;MAX_UDP_SIZE];
-                        let r = self.tun.recv(&mut (*b)[..len]).await;
+                        let r = self.tun.recv(&mut (*b)).await;
                         (r, Arc::from_raw(b))
                     }
                 } => {
@@ -377,7 +377,7 @@ impl Device {
                     // SAFETY: only one branch uses buf every loop
                     unsafe{
                         let b = Arc::into_raw(buf.clone()) as *mut [u8;MAX_UDP_SIZE];
-                        let r = self.udp.recv_from(&mut (*b)[..]).await;
+                        let r = self.udp.recv_from(&mut (*b)).await;
                         (r,Arc::from_raw(b))
                     }
                 } => {

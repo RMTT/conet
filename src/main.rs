@@ -1,6 +1,6 @@
 use clap::Parser;
-use conet::connection::config::RegistryConfig;
 use conet::connection::ConnectHandle;
+use conet::connection::config::RegistryConfig;
 use conet::connection::{config::ConnectionConfig, device::Device};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -27,7 +27,9 @@ struct AppConfig {
 #[tokio::main(worker_threads = 4)]
 async fn main() {
     if env::var("RUST_LOG").is_err() {
-        env::set_var("RUST_LOG", "info");
+        unsafe {
+            env::set_var("RUST_LOG", "info");
+        }
     }
     env_logger::init();
 
