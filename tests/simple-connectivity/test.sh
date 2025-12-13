@@ -76,7 +76,6 @@ create_network() {
 	print_status "Docker network created successfully"
 }
 
-
 # Function to start containers
 start_containers() {
 	print_status "Starting containers..."
@@ -199,4 +198,3 @@ main() {
 
 # Run main function
 main "$@"
-

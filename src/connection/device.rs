@@ -8,8 +8,8 @@ use boringtun::noise::{Tunn, TunnResult};
 use boringtun::x25519::{PublicKey, StaticSecret};
 use bytes::BytesMut;
 use ipnet::IpNet;
-use rand::rngs::OsRng;
 use rand::RngCore;
+use rand::rngs::OsRng;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::Mutex;
 use std::usize;
@@ -183,7 +183,7 @@ impl Device {
             None => {
                 return Err(Error::Err(
                     "cannot get dst_addr from tun packet".to_string(),
-                ))
+                ));
             }
         };
         log::debug!("receive packet from tun device with dst: {dst_addr}");
@@ -207,7 +207,7 @@ impl Device {
             match tunn.encapsulate(&data, &mut dst) {
                 boringtun::noise::TunnResult::Done => return Ok(()),
                 boringtun::noise::TunnResult::Err(wire_guard_error) => {
-                    return Err(Error::Err(format!("{:?}", wire_guard_error)))
+                    return Err(Error::Err(format!("{:?}", wire_guard_error)));
                 }
                 boringtun::noise::TunnResult::WriteToNetwork(packet) => {
                     if let Some(endpoint) = peer.endpoint {
@@ -220,7 +220,7 @@ impl Device {
                                 return Err(Error::Err(format!(
                                     "cannot send packet to {}: {}",
                                     endpoint, e
-                                )))
+                                )));
                             }
                         }
                     } else {
@@ -329,8 +329,6 @@ impl Device {
     }
 
     pub async fn event_loop(&self) -> ConetResult<()> {
-        let buf = Arc::new([0; MAX_UDP_SIZE]);
-
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => {
@@ -347,23 +345,18 @@ impl Device {
                         return Ok(());
                     }
                 },
-                (r,b) = async {
-                    let len = usize::from(self.tun.mtu());
-                    // SAFETY: only one branch uses buf every loop
-                    unsafe{
-                        let b = Arc::into_raw(buf.clone()) as *mut [u8;MAX_UDP_SIZE];
-                        let r = self.tun.recv(&mut (*b)).await;
-                        (r, Arc::from_raw(b))
-                    }
+                (r,mut b) = async {
+                    let mut buf = BytesMut::zeroed(MAX_UDP_SIZE);
+                    let r = self.tun.recv(&mut buf).await;
+                    (r, buf)
                 } => {
                     match r {
                         Err(e) => log::warn!("failed to receive data from tun device: {e}"),
                         Ok(n) => {
-                            let mut temp_buf = BytesMut::new();
-                            temp_buf.extend_from_slice(&b[..n]);
+                            b.truncate(n);
                             let r = self.message_channel.sender.send(Message{
                                 t: MessageType::FromTun,
-                                data: temp_buf,
+                                data: b,
                                 src_addr: None
                             }).await;
 
@@ -373,22 +366,18 @@ impl Device {
                         }
                     }
                 },
-                (r,b) = async {
-                    // SAFETY: only one branch uses buf every loop
-                    unsafe{
-                        let b = Arc::into_raw(buf.clone()) as *mut [u8;MAX_UDP_SIZE];
-                        let r = self.udp.recv_from(&mut (*b)).await;
-                        (r,Arc::from_raw(b))
-                    }
+                (r,mut b) = async {
+                    let mut buf = BytesMut::zeroed(MAX_UDP_SIZE);
+                    let r = self.udp.recv_from(&mut buf).await;
+                    (r,buf)
                 } => {
                     match r {
                         Err(e) => log::warn!("failed to receive data from tun device: {e}"),
                         Ok((n, addr)) => {
-                            let mut temp_buf = BytesMut::new();
-                            temp_buf.extend_from_slice(&b[..n]);
+                            b.truncate(n);
                             let r = self.message_channel.sender.send(Message{
                                 t: MessageType::FromUdp,
-                                data: temp_buf,
+                                data: b,
                                 src_addr: Some(addr)
                             }).await;
 
