@@ -2,12 +2,12 @@
 netid = "test"
 
 [[peers.nodes]]
-nodeid = "test-1"
+nodeid = "moon"
 public_key = "oA0G/XPi6lL67p6N27tr334naMAbJNqDuRbanlEekUc="
 endpoint = "172.18.0.2:51821"
 allowed_ips = ["10.10.10.1/32"]
 
 [[peers.nodes]]
-nodeid = "test-2"
+nodeid = "sun"
 public_key = "EFjn7DE3fTDRMKoOgOqMUyjhS8/W7ryiIWplfWM7hCQ="
 allowed_ips = ["10.10.10.10/32"]

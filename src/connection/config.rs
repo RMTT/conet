@@ -1,4 +1,4 @@
-use base64::{prelude::BASE64_STANDARD, Engine};
+use base64::{Engine, prelude::BASE64_STANDARD};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +26,7 @@ pub struct PeerInfo {
     pub public_key: String,
     pub endpoint: Option<String>,
     pub allowed_ips: Vec<IpNet>,
+    pub persistent_keepalive: Option<u16>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerConfig {

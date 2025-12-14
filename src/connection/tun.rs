@@ -23,11 +23,11 @@ impl TunDevice {
         match addr {
             IpNet::V4(ipv4_net) => {
                 self.device
-                    .add_address_v4(ipv4_net.network(), ipv4_net.netmask())?;
+                    .add_address_v4(ipv4_net.addr(), ipv4_net.netmask())?;
             }
             IpNet::V6(ipv6_net) => {
                 self.device
-                    .add_address_v6(ipv6_net.network(), ipv6_net.netmask())?;
+                    .add_address_v6(ipv6_net.addr(), ipv6_net.netmask())?;
             }
         }
 
