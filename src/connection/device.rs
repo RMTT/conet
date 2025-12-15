@@ -2,6 +2,7 @@ use crate::errors::ConetResult;
 use crate::utils;
 use crate::{connection::config::ConnectionConfig, errors::Error};
 use async_channel::{Receiver, Sender};
+use boringtun::noise::errors::WireGuardError;
 use boringtun::noise::handshake::parse_handshake_anon;
 use boringtun::noise::rate_limiter::RateLimiter;
 use boringtun::noise::{Tunn, TunnResult};
@@ -13,31 +14,19 @@ use rand::rngs::OsRng;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::Mutex;
 use std::usize;
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, time::Duration};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use super::config::{PeerConfig, RegistryConfig};
+use super::peer::Peer;
+use super::peer::PeerMap;
 use super::tun::TunDevice;
 use super::udp::UdpSocket;
 
 const MAX_UDP_SIZE: usize = 0xFFFF;
 const HANDSHAKE_RATE_LIMIT: u64 = 100; // The number of handshakes per second we can tolerate before using cookies
-
-pub struct Peer {
-    pub tunn: Tunn,
-    pub id: u32,
-    pub endpoint: Option<SocketAddr>,
-    pub allowed_ips: Vec<IpNet>,
-}
-
-/// combine registry configuration and actual peer info
-pub struct PeerState {
-    peers_by_ip: HashMap<IpNet, Arc<Peer>>,
-    peers_by_idx: HashMap<u32, Arc<Peer>>,
-    peers: HashMap<PublicKey, Arc<Peer>>,
-    registry: HashMap<String, PeerConfig>,
-}
+const TIMER_INTERVAL: Duration = Duration::from_millis(250); // Timer update interval
+const RATE_LIMITER_TIMER_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct Device {
     config: ConnectionConfig,
@@ -45,7 +34,7 @@ pub struct Device {
     udp: UdpSocket,
     key_pair: (StaticSecret, PublicKey),
     pub message_channel: MessageChannel,
-    peer_state: RwLock<PeerState>,
+    peer_map: RwLock<PeerMap>,
     /// currently index_generator only be used in update_registry with peer_state, so it's ok to
     /// use sync::Mutex
     index_generator: Mutex<IndexLfsr>,
@@ -59,7 +48,6 @@ pub struct MessageChannel {
 }
 
 pub enum MessageType {
-    Stop,
     FromTun,
     FromUdp,
 }
@@ -93,16 +81,7 @@ impl Device {
         let (sender, receiver) = async_channel::bounded(2048);
         let message_channel = MessageChannel { sender, receiver };
 
-        let peers_by_ip = HashMap::new();
-        let peers_by_idx = HashMap::new();
-        let peers = HashMap::new();
-        let registry = HashMap::new();
-        let peer_state = RwLock::new(PeerState {
-            peers_by_ip,
-            peers_by_idx,
-            peers,
-            registry,
-        });
+        let peer_map = RwLock::new(PeerMap::new());
 
         Ok(Self {
             config,
@@ -110,68 +89,139 @@ impl Device {
             message_channel,
             tun,
             udp,
-            peer_state,
+            peer_map,
             cancel_token,
             index_generator: Mutex::new(Default::default()),
             rate_limiter: RateLimiter::new(&public_key, HANDSHAKE_RATE_LIMIT),
         })
     }
 
-    pub async fn update_registry(&self, config: RegistryConfig) -> ConetResult<()> {
-        let mut peer_state = self.peer_state.write().await;
+    /// Add a single peer to the device
+    pub async fn add_peer(
+        &self,
+        node: &crate::connection::config::PeerInfo,
+        netid: &str,
+    ) -> ConetResult<()> {
+        let mut peer_map = self.peer_map.write().await;
         let mut idx_generator = self.index_generator.lock().unwrap();
 
-        for peer in config.peers {
-            for node in &peer.nodes {
-                if &node.nodeid == &self.config.nodeid && &peer.netid == &self.config.netid {
-                    continue;
-                }
+        if &node.nodeid == &self.config.nodeid && netid == &self.config.netid {
+            return Ok(());
+        }
 
-                let idx = idx_generator.next();
-                let pubkey = utils::base64_to_public_key(node.public_key.clone())?;
-                let tu = Tunn::new(
-                    self.key_pair.0.clone(),
-                    pubkey.clone(),
-                    None,
-                    None,
-                    idx,
-                    None,
-                );
+        let idx = idx_generator.next();
+        let pubkey = utils::base64_to_public_key(node.public_key.clone())?;
+        let tu = Tunn::new(
+            self.key_pair.0.clone(),
+            pubkey.clone(),
+            None,
+            None,
+            idx,
+            None,
+        );
 
-                let mut endpoint: Option<SocketAddr> = None;
-                if let Some(end) = &node.endpoint {
-                    endpoint = match end.to_socket_addrs() {
-                        Ok(a) => a.last(),
-                        Err(e) => {
-                            log::warn!(
-                                "endpoint of node {} in net {} cannot be resolved: {e}, skipped",
-                                node.nodeid,
-                                peer.netid,
-                            );
-                            continue;
-                        }
-                    };
-                    log::debug!(
-                        "endpoint of node {} in net {} be resolved to: {endpoint:?}",
+        let mut endpoint: Option<SocketAddr> = None;
+        if let Some(end) = &node.endpoint {
+            endpoint = match end.to_socket_addrs() {
+                Ok(a) => a.last(),
+                Err(e) => {
+                    log::warn!(
+                        "endpoint of node {} cannot be resolved: {e}, skipped",
                         node.nodeid,
-                        peer.netid,
                     );
+                    return Err(Error::Err(format!("Cannot resolve endpoint: {}", e)));
                 }
+            };
+            log::debug!(
+                "endpoint of node {} be resolved to: {endpoint:?}",
+                node.nodeid,
+            );
+        }
 
-                let peer = Arc::new(Peer {
-                    tunn: tu,
-                    id: idx,
-                    endpoint,
-                    allowed_ips: node.allowed_ips.clone(),
-                });
-                peer_state.peers_by_idx.insert(idx, peer.clone());
-                peer_state.peers.insert(pubkey, peer.clone());
-                for ip in &node.allowed_ips {
-                    peer_state.peers_by_ip.insert(ip.clone(), peer.clone());
+        let peer = Peer {
+            tunn: tu,
+            id: idx,
+            nodeid: node.nodeid.clone(),
+            netid: netid.to_string(),
+            endpoint,
+            allowed_ips: node.allowed_ips.clone(),
+            persistent_keepalive: node.persistent_keepalive,
+        };
+
+        peer_map.add_peer(pubkey, peer);
+
+        Ok(())
+    }
+
+    /// Remove all peers belonging to a specific netid
+    pub async fn remove_peers_by_netid(&self, netid: &str) -> ConetResult<usize> {
+        let mut peer_map = self.peer_map.write().await;
+        let mut removed_count = 0;
+
+        // Collect peers to remove
+        let mut pubkeys_to_remove = Vec::new();
+        for (pubkey, peer) in peer_map.get_all_peers() {
+            if let Ok(peer_lock) = peer.lock() {
+                if peer_lock.netid == netid {
+                    pubkeys_to_remove.push(pubkey.clone());
+                    removed_count += 1;
                 }
             }
+        }
 
-            peer_state.registry.insert(peer.netid.clone(), peer);
+        // Remove peers
+        for pubkey in pubkeys_to_remove {
+            peer_map.remove_peer_by_pubkey(&pubkey);
+        }
+
+        log::info!("Removed {} peers from netid {}", removed_count, netid);
+        Ok(removed_count)
+    }
+
+    /// Update timers for all peers
+    async fn update_all_timers(&self) -> ConetResult<()> {
+        let peer_map = self.peer_map.read().await;
+        let mut dst = BytesMut::zeroed(2048);
+
+        for (_, peer) in peer_map.get_all_peers() {
+            if let Ok(mut peer_lock) = peer.lock() {
+                let endpoint = peer_lock.endpoint;
+
+                match peer_lock.tunn.update_timers(&mut dst) {
+                    TunnResult::Done => {
+                        // No action needed
+                    }
+                    TunnResult::Err(e) => {
+                        log::warn!("Timer update error for peer {}: {:?}", peer_lock.id, e);
+                        // If connection expired, clear endpoint
+                        if matches!(e, WireGuardError::ConnectionExpired) {
+                            peer_lock.endpoint = None;
+                        }
+                    }
+                    TunnResult::WriteToNetwork(packet) => {
+                        if let Some(endpoint) = endpoint {
+                            match self.udp.send_to(&packet, endpoint).await {
+                                Ok(_) => {
+                                    log::debug!("Sent timer update packet to {}", endpoint);
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "Failed to send timer update packet to {}: {}",
+                                        endpoint,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        log::warn!(
+                            "Unexpected result from update_timers for peer {}",
+                            peer_lock.id
+                        );
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -188,47 +238,49 @@ impl Device {
         };
         log::debug!("receive packet from tun device with dst: {dst_addr}");
 
-        let peer_state = self.peer_state.write().await;
-        let peer = match peer_state.peers_by_ip.get(&IpNet::from(dst_addr)) {
-            Some(p) => p,
-            None => return Err(Error::Err(format!("no endpoint to {}", &dst_addr))),
-        };
-
-        if !peer.contains(&dst_addr) {
-            return Err(Error::Err(format!("{} is not in allowed_ips", &dst_addr)));
-        }
-
         let mut dst = BytesMut::zeroed(std::cmp::max(data.len() + 32, 148));
-        // SAFETY: RwLock of PeerState has provided safety
-        unsafe {
-            let peer_ptr = Arc::into_raw(peer.clone()) as *mut Peer;
-            let tunn = &mut (*peer_ptr).tunn;
-            let id = (*peer_ptr).id;
-            match tunn.encapsulate(&data, &mut dst) {
-                boringtun::noise::TunnResult::Done => return Ok(()),
-                boringtun::noise::TunnResult::Err(wire_guard_error) => {
-                    return Err(Error::Err(format!("{:?}", wire_guard_error)));
-                }
-                boringtun::noise::TunnResult::WriteToNetwork(packet) => {
-                    if let Some(endpoint) = peer.endpoint {
-                        match self.udp.send_to(&packet, endpoint).await {
-                            Ok(_) => {
-                                log::debug!("send packet to {endpoint} with peer id {}", id);
-                                Ok(())
-                            }
-                            Err(e) => {
-                                return Err(Error::Err(format!(
-                                    "cannot send packet to {}: {}",
-                                    endpoint, e
-                                )));
-                            }
-                        }
-                    } else {
-                        return Err(Error::Err(format!("no endpoint for {}", &dst_addr)));
-                    }
-                }
-                _ => return Err(Error::Err("Unexpected result from encapsulate".to_string())),
+        let (packet_result, endpoint) = {
+            let peer_map = self.peer_map.read().await;
+            let mut peer = match peer_map.get_peer_by_ip(&IpNet::from(dst_addr)) {
+                Some(p) => p.lock().unwrap(),
+                None => return Err(Error::Err(format!("no endpoint to {}", &dst_addr))),
+            };
+
+            // Check if destination is in allowed IPs
+            if !peer.contains(&dst_addr) {
+                return Err(Error::Err(format!("{} is not in allowed_ips", &dst_addr)));
             }
+
+            let packet_result = peer.tunn.encapsulate(&data, &mut dst);
+            let endpoint = peer.endpoint;
+
+            (packet_result, endpoint)
+        }; // release lock here
+
+        match packet_result {
+            boringtun::noise::TunnResult::Done => return Ok(()),
+            boringtun::noise::TunnResult::Err(wire_guard_error) => {
+                return Err(Error::Err(format!("{:?}", wire_guard_error)));
+            }
+            boringtun::noise::TunnResult::WriteToNetwork(packet) => {
+                if let Some(endpoint) = endpoint {
+                    match self.udp.send_to(&packet, endpoint).await {
+                        Ok(_) => {
+                            log::debug!("send packet to {endpoint}");
+                            Ok(())
+                        }
+                        Err(e) => {
+                            return Err(Error::Err(format!(
+                                "cannot send packet to {}: {}",
+                                endpoint, e
+                            )));
+                        }
+                    }
+                } else {
+                    return Err(Error::Err(format!("no endpoint for {}", &dst_addr)));
+                }
+            }
+            _ => return Err(Error::Err("Unexpected result from encapsulate".to_string())),
         }
     }
 
@@ -248,31 +300,34 @@ impl Device {
 
         log::debug!("receive packet from udp sockets with source: {src_addr}");
 
-        let peer_state = self.peer_state.write().await;
-        let private_key = &self.key_pair.0;
-        let public_key = &self.key_pair.1;
-        let peer = match &packet {
-            boringtun::noise::Packet::HandshakeInit(p) => {
-                parse_handshake_anon(private_key, public_key, &p)
-                    .ok()
-                    .and_then(|hh| {
-                        peer_state
-                            .peers
-                            .get(&PublicKey::from(hh.peer_static_public))
-                    })
-            }
-            boringtun::noise::Packet::HandshakeResponse(p) => {
-                peer_state.peers_by_idx.get(&(p.receiver_idx >> 8))
-            }
-            boringtun::noise::Packet::PacketCookieReply(p) => {
-                peer_state.peers_by_idx.get(&(p.receiver_idx >> 8))
-            }
-            boringtun::noise::Packet::PacketData(p) => {
-                peer_state.peers_by_idx.get(&(p.receiver_idx >> 8))
-            }
-        };
+        // Find the peer
+        let peer_ref = {
+            let peer_map = self.peer_map.read().await;
+            let private_key = &self.key_pair.0;
+            let public_key = &self.key_pair.1;
 
-        let peer = match peer {
+            let peer = match &packet {
+                boringtun::noise::Packet::HandshakeInit(p) => {
+                    parse_handshake_anon(private_key, public_key, &p)
+                        .ok()
+                        .and_then(|hh| peer_map.get_peer(&PublicKey::from(hh.peer_static_public)))
+                }
+                boringtun::noise::Packet::HandshakeResponse(p) => {
+                    peer_map.get_peer_by_id(&(p.receiver_idx >> 8))
+                }
+                boringtun::noise::Packet::PacketCookieReply(p) => {
+                    peer_map.get_peer_by_id(&(p.receiver_idx >> 8))
+                }
+                boringtun::noise::Packet::PacketData(p) => {
+                    peer_map.get_peer_by_id(&(p.receiver_idx >> 8))
+                }
+            };
+
+            // Clone the Arc to keep the peer alive
+            peer.cloned()
+        }; // peer_map is dropped here, releasing the lock
+
+        let peer_ref = match peer_ref {
             Some(p) => p,
             None => {
                 log::debug!(
@@ -283,67 +338,89 @@ impl Device {
             }
         };
 
-        // Are there packets to send from the queue?
-        let mut flush = false;
-        // SAFETY: RwLock of PeerState has provided safety
-        unsafe {
-            let peer_ptr = Arc::into_raw(peer.clone()) as *mut Peer;
-            let tunn = &mut (*peer_ptr).tunn;
-            // set endpoint here because raw pointer is not send, so can't use it after resume from
-            // await
-            (*peer_ptr).endpoint = Some(src_addr);
-            match tunn.handle_verified_packet(packet, &mut dst) {
+        // First handle the packet and collect actions
+        let mut tunnel_packets = Vec::new();
+        let mut udp_packets = Vec::new();
+        let mut flush_needed = false;
+
+        {
+            let mut peer_lock = peer_ref.lock().unwrap();
+
+            // set endpoint
+            peer_lock.endpoint = Some(src_addr);
+
+            match peer_lock.tunn.handle_verified_packet(packet, &mut dst) {
                 TunnResult::Done => return Ok(()),
                 TunnResult::Err(e) => return Err(Error::Err(format!("{:?}", e))),
                 TunnResult::WriteToNetwork(p) => {
-                    flush = true;
-                    if let Err(e) = self.udp.send_to(&p, src_addr).await {
-                        return Err(Error::Err(format!("{:?}", e)));
-                    }
+                    udp_packets.push(p.to_vec());
+                    flush_needed = true;
                 }
                 TunnResult::WriteToTunnelV4(p, ipv4_addr) => {
-                    if peer.contains(&IpAddr::from(ipv4_addr)) {
-                        if let Err(e) = self.tun.send(p).await {
-                            return Err(Error::Err(format!("{:?}", e)));
-                        }
+                    if peer_lock.contains(&IpAddr::from(ipv4_addr)) {
+                        tunnel_packets.push(p.to_vec());
                     }
                 }
                 TunnResult::WriteToTunnelV6(p, ipv6_addr) => {
-                    if peer.contains(&IpAddr::from(ipv6_addr)) {
-                        if let Err(e) = self.tun.send(p).await {
-                            return Err(Error::Err(format!("{:?}", e)));
-                        }
+                    if peer_lock.contains(&IpAddr::from(ipv6_addr)) {
+                        tunnel_packets.push(p.to_vec());
                     }
                 }
             }
 
-            if flush {
-                while let TunnResult::WriteToNetwork(packet) = tunn.decapsulate(None, &[], &mut dst)
+            if flush_needed {
+                while let TunnResult::WriteToNetwork(packet) =
+                    peer_lock.tunn.decapsulate(None, &[], &mut dst)
                 {
-                    let _ = self.udp.send_to(packet, src_addr).await;
+                    udp_packets.push(packet.to_vec());
                 }
+            }
+        } // Lock is released here
+
+        // Send UDP packets outside the lock
+        for packet in udp_packets {
+            if let Err(e) = self.udp.send_to(&packet, src_addr).await {
+                return Err(Error::Err(format!("{:?}", e)));
+            }
+        }
+
+        // Send tunnel packets outside the lock
+        for mut packet in tunnel_packets {
+            if let Err(e) = self.tun.send(&mut packet).await {
+                return Err(Error::Err(format!("{:?}", e)));
             }
         }
 
         Ok(())
     }
 
+    pub async fn timer_loop(&self) -> ConetResult<()> {
+        let mut timer_interval = tokio::time::interval(TIMER_INTERVAL);
+        let mut rate_limiter_reset_interval = tokio::time::interval(RATE_LIMITER_TIMER_INTERVAL);
+
+        loop {
+            tokio::select! {
+                _ = self.cancel_token.cancelled() => {
+                        return Ok(());
+                },
+                _ = timer_interval.tick() => {
+                    // Update timers for all peers
+                    if let Err(e) = self.update_all_timers().await {
+                        log::warn!("Failed to update timers: {}", e);
+                    }
+                },
+                _ = rate_limiter_reset_interval.tick() => {
+                    self.rate_limiter.reset_count();
+                }
+            }
+        }
+    }
+
     pub async fn event_loop(&self) -> ConetResult<()> {
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => {
-                    let b = BytesMut::new();
-                    let r = self.message_channel.sender.send(Message{
-                        t: MessageType::Stop,
-                        data: b,
-                        src_addr: None
-                    }).await;
-
-                    if let Err(e) = r  {
-                        log::warn!("send stop message to worker failed: {e}");
-                    }else{
-                        return Ok(());
-                    }
+                    return Ok(());
                 },
                 (r,mut b) = async {
                     let mut buf = BytesMut::zeroed(MAX_UDP_SIZE);
@@ -389,17 +466,6 @@ impl Device {
                 }
             }
         }
-    }
-}
-
-impl Peer {
-    fn contains(&self, target: &IpAddr) -> bool {
-        for net in &self.allowed_ips {
-            if net.contains(target) {
-                return true;
-            }
-        }
-        false
     }
 }
 
