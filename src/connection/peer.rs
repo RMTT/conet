@@ -1,8 +1,9 @@
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
+use tokio::sync::Mutex;
 
 use boringtun::{noise::Tunn, x25519::PublicKey};
 use ipnet::IpNet;
@@ -35,6 +36,12 @@ pub struct PeerMap {
     peers: HashMap<PublicKey, Arc<Mutex<Peer>>>,
 }
 
+impl Default for PeerMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PeerMap {
     /// Create a new PeerMap
     pub fn new() -> Self {
@@ -59,7 +66,7 @@ impl PeerMap {
 
         // Add to peers_by_ip map
         for ip in allowed_ips {
-            self.peers_by_ip.insert(ip.clone(), peer_arc.clone());
+            self.peers_by_ip.insert(ip, peer_arc.clone());
         }
     }
 
@@ -84,7 +91,7 @@ impl PeerMap {
         self.peers_by_idx.remove(&id);
 
         for ip in &peer.allowed_ips {
-            self.peers_by_ip.remove(&ip);
+            self.peers_by_ip.remove(ip);
         }
 
         self.peers.remove(&pubkey)

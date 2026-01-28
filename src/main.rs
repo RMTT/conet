@@ -1,11 +1,11 @@
 use clap::Parser;
 use conet::connection::ConnectHandle;
+use conet::connection::config::ConnectionConfig;
 use conet::connection::config::RegistryConfig;
-use conet::connection::{config::ConnectionConfig, device::Device};
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::PathBuf;
 use std::process;
-use std::{env, fs};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Parser, Debug)]
@@ -26,12 +26,7 @@ struct AppConfig {
 
 #[tokio::main(worker_threads = 4)]
 async fn main() {
-    if env::var("RUST_LOG").is_err() {
-        unsafe {
-            env::set_var("RUST_LOG", "info");
-        }
-    }
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
 

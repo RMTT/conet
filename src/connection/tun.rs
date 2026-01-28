@@ -1,5 +1,3 @@
-use std::usize;
-
 use ipnet::IpNet;
 
 use crate::errors::ConetResult;
