@@ -13,7 +13,6 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::Mutex;
-use std::usize;
 use std::{net::SocketAddr, time::Duration};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -105,7 +104,7 @@ impl Device {
         let mut peer_map = self.peer_map.write().await;
         let mut idx_generator = self.index_generator.lock().unwrap();
 
-        if &node.nodeid == &self.config.nodeid && netid == &self.config.netid {
+        if node.nodeid == self.config.nodeid && netid == self.config.netid {
             return Ok(());
         }
 
@@ -113,7 +112,7 @@ impl Device {
         let pubkey = utils::base64_to_public_key(node.public_key.clone())?;
         let tu = Tunn::new(
             self.key_pair.0.clone(),
-            pubkey.clone(),
+            pubkey,
             None,
             None,
             idx,
@@ -161,11 +160,10 @@ impl Device {
         // Collect peers to remove
         let mut pubkeys_to_remove = Vec::new();
         for (pubkey, peer) in peer_map.get_all_peers() {
-            if let Ok(peer_lock) = peer.lock() {
-                if peer_lock.netid == netid {
-                    pubkeys_to_remove.push(pubkey.clone());
-                    removed_count += 1;
-                }
+            let peer_lock = peer.lock().await;
+            if peer_lock.netid == netid {
+                pubkeys_to_remove.push(*pubkey);
+                removed_count += 1;
             }
         }
 
@@ -183,43 +181,42 @@ impl Device {
         let peer_map = self.peer_map.read().await;
         let mut dst = BytesMut::zeroed(2048);
 
-        for (_, peer) in peer_map.get_all_peers() {
-            if let Ok(mut peer_lock) = peer.lock() {
-                let endpoint = peer_lock.endpoint;
+        for peer in peer_map.get_all_peers().values() {
+            let mut peer_lock = peer.lock().await;
+            let endpoint = peer_lock.endpoint;
 
-                match peer_lock.tunn.update_timers(&mut dst) {
-                    TunnResult::Done => {
-                        // No action needed
+            match peer_lock.tunn.update_timers(&mut dst) {
+                TunnResult::Done => {
+                    // No action needed
+                }
+                TunnResult::Err(e) => {
+                    log::warn!("Timer update error for peer {}: {:?}", peer_lock.id, e);
+                    // If connection expired, clear endpoint
+                    if matches!(e, WireGuardError::ConnectionExpired) {
+                        peer_lock.endpoint = None;
                     }
-                    TunnResult::Err(e) => {
-                        log::warn!("Timer update error for peer {}: {:?}", peer_lock.id, e);
-                        // If connection expired, clear endpoint
-                        if matches!(e, WireGuardError::ConnectionExpired) {
-                            peer_lock.endpoint = None;
-                        }
-                    }
-                    TunnResult::WriteToNetwork(packet) => {
-                        if let Some(endpoint) = endpoint {
-                            match self.udp.send_to(&packet, endpoint).await {
-                                Ok(_) => {
-                                    log::debug!("Sent timer update packet to {}", endpoint);
-                                }
-                                Err(e) => {
-                                    log::warn!(
-                                        "Failed to send timer update packet to {}: {}",
-                                        endpoint,
-                                        e
-                                    );
-                                }
+                }
+                TunnResult::WriteToNetwork(packet) => {
+                    if let Some(endpoint) = endpoint {
+                        match self.udp.send_to(packet, endpoint).await {
+                            Ok(_) => {
+                                log::debug!("Sent timer update packet to {}", endpoint);
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to send timer update packet to {}: {}",
+                                    endpoint,
+                                    e
+                                );
                             }
                         }
                     }
-                    _ => {
-                        log::warn!(
-                            "Unexpected result from update_timers for peer {}",
-                            peer_lock.id
-                        );
-                    }
+                }
+                _ => {
+                    log::warn!(
+                        "Unexpected result from update_timers for peer {}",
+                        peer_lock.id
+                    );
                 }
             }
         }
@@ -242,7 +239,7 @@ impl Device {
         let (packet_result, endpoint) = {
             let peer_map = self.peer_map.read().await;
             let mut peer = match peer_map.get_peer_by_ip(&IpNet::from(dst_addr)) {
-                Some(p) => p.lock().unwrap(),
+                Some(p) => p.lock().await,
                 None => return Err(Error::Err(format!("no endpoint to {}", &dst_addr))),
             };
 
@@ -258,29 +255,27 @@ impl Device {
         }; // release lock here
 
         match packet_result {
-            boringtun::noise::TunnResult::Done => return Ok(()),
+            boringtun::noise::TunnResult::Done => Ok(()),
             boringtun::noise::TunnResult::Err(wire_guard_error) => {
-                return Err(Error::Err(format!("{:?}", wire_guard_error)));
+                Err(Error::Err(format!("{:?}", wire_guard_error)))
             }
             boringtun::noise::TunnResult::WriteToNetwork(packet) => {
                 if let Some(endpoint) = endpoint {
-                    match self.udp.send_to(&packet, endpoint).await {
+                    match self.udp.send_to(packet, endpoint).await {
                         Ok(_) => {
                             log::debug!("send packet to {endpoint}");
                             Ok(())
                         }
-                        Err(e) => {
-                            return Err(Error::Err(format!(
-                                "cannot send packet to {}: {}",
-                                endpoint, e
-                            )));
-                        }
+                        Err(e) => Err(Error::Err(format!(
+                            "cannot send packet to {}: {}",
+                            endpoint, e
+                        ))),
                     }
                 } else {
-                    return Err(Error::Err(format!("no endpoint for {}", &dst_addr)));
+                    Err(Error::Err(format!("no endpoint for {}", &dst_addr)))
                 }
             }
-            _ => return Err(Error::Err("Unexpected result from encapsulate".to_string())),
+            _ => Err(Error::Err("Unexpected result from encapsulate".to_string())),
         }
     }
 
@@ -308,7 +303,7 @@ impl Device {
 
             let peer = match &packet {
                 boringtun::noise::Packet::HandshakeInit(p) => {
-                    parse_handshake_anon(private_key, public_key, &p)
+                    parse_handshake_anon(private_key, public_key, p)
                         .ok()
                         .and_then(|hh| peer_map.get_peer(&PublicKey::from(hh.peer_static_public)))
                 }
@@ -344,7 +339,7 @@ impl Device {
         let mut flush_needed = false;
 
         {
-            let mut peer_lock = peer_ref.lock().unwrap();
+            let mut peer_lock = peer_ref.lock().await;
 
             // set endpoint
             peer_lock.endpoint = Some(src_addr);
@@ -422,7 +417,7 @@ impl Device {
                 _ = self.cancel_token.cancelled() => {
                     return Ok(());
                 },
-                (r,mut b) = async {
+                (r, mut b) = async {
                     let mut buf = BytesMut::zeroed(MAX_UDP_SIZE);
                     let r = self.tun.recv(&mut buf).await;
                     (r, buf)
@@ -443,13 +438,34 @@ impl Device {
                         }
                     }
                 },
-                (r,mut b) = async {
+                (r, mut b) = async {
                     let mut buf = BytesMut::zeroed(MAX_UDP_SIZE);
-                    let r = self.udp.recv_from(&mut buf).await;
-                    (r,buf)
+                    let r = self.udp.recv_from_v4(&mut buf).await;
+                    (r, buf)
                 } => {
                     match r {
-                        Err(e) => log::warn!("failed to receive data from tun device: {e}"),
+                        Err(e) => log::warn!("failed to receive data from udp v4: {e}"),
+                        Ok((n, addr)) => {
+                            b.truncate(n);
+                            let r = self.message_channel.sender.send(Message{
+                                t: MessageType::FromUdp,
+                                data: b,
+                                src_addr: Some(addr)
+                            }).await;
+
+                            if let Err(e) = r  {
+                                log::warn!("send udp message to worker failed: {e}");
+                            }
+                        }
+                    }
+                },
+                (r, mut b) = async {
+                    let mut buf = BytesMut::zeroed(MAX_UDP_SIZE);
+                    let r = self.udp.recv_from_v6(&mut buf).await;
+                    (r, buf)
+                } => {
+                    match r {
+                        Err(e) => log::warn!("failed to receive data from udp v6: {e}"),
                         Ok((n, addr)) => {
                             b.truncate(n);
                             let r = self.message_channel.sender.send(Message{

@@ -1,5 +1,4 @@
-use core::slice;
-use std::{net::SocketAddr, str::FromStr, usize};
+use std::{net::SocketAddr, str::FromStr};
 
 use socket2::{Domain, Protocol, SockAddr, Type};
 
@@ -33,39 +32,21 @@ impl UdpSocket {
     }
 
     pub async fn send_to(&self, buf: &[u8], addr: SocketAddr) -> ConetResult<usize> {
-        let n: usize;
-        match &addr.ip() {
-            std::net::IpAddr::V4(_) => n = self.udp4.send_to(buf, addr).await?,
-            std::net::IpAddr::V6(_) => n = self.udp6.send_to(buf, addr).await?,
-        }
+        let n = match &addr.ip() {
+            std::net::IpAddr::V4(_) => self.udp4.send_to(buf, addr).await?,
+            std::net::IpAddr::V6(_) => self.udp6.send_to(buf, addr).await?,
+        };
 
         Ok(n)
     }
 
-    pub async fn recv_from(&self, buf: &mut [u8]) -> ConetResult<(usize, SocketAddr)> {
-        let len = buf.len();
-        let raw_buf = buf.as_mut_ptr();
+    pub async fn recv_from_v4(&self, buf: &mut [u8]) -> ConetResult<(usize, SocketAddr)> {
+        let n = self.udp4.recv_from(buf).await?;
+        Ok(n)
+    }
 
-        // SAFETY: only one branch uses buf every loop
-        tokio::select! {
-            r = async {
-                unsafe{
-                    let temp_buf = slice::from_raw_parts_mut(raw_buf, len);
-                    self.udp6.recv_from(temp_buf).await
-                }
-            }=> {
-                let n = r?;
-                Ok(n)
-            },
-            r = async {
-                unsafe{
-                    let temp_buf = slice::from_raw_parts_mut(raw_buf, len);
-                    self.udp4.recv_from(temp_buf).await
-                }
-            } => {
-                let n = r?;
-                Ok(n)
-            }
-        }
+    pub async fn recv_from_v6(&self, buf: &mut [u8]) -> ConetResult<(usize, SocketAddr)> {
+        let n = self.udp6.recv_from(buf).await?;
+        Ok(n)
     }
 }

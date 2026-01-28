@@ -42,7 +42,7 @@ impl ConnectHandle {
                 m = device.message_channel.receiver.recv() => {
                     if let Err(e) = m {
                         log::debug!("workers failed to receive message from device: {e}");
-                        continue;
+                        return Ok(());
                     }
                     m?
                 },
